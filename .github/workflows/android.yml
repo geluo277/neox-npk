@@ -97,9 +97,15 @@ jobs:
             -DASTCENC_SHAREDLIB=OFF \
             -DASTCENC_UNITTEST=OFF
           cmake --build astc-encoder/build-android --parallel 2
-          ASTC_BIN="$(find astc-encoder/build-android -type f -name 'astcenc*' -perm -111 -print -quit)"
-          if [ -z "$ASTC_BIN" ]; then
-            echo "ASTC decoder executable not produced"; find astc-encoder/build-android -type f | head -200; exit 1
+          # astc-encoder 5.1.0 names the Android CLI target astcdec-neon,
+          # not astcenc*. Prefer the exact target path, then fall back to a
+          # search for the actual CLI executable.
+          ASTC_BIN="astc-encoder/build-android/Source/astcdec-neon"
+          if [ ! -x "$ASTC_BIN" ]; then
+            ASTC_BIN="$(find astc-encoder/build-android -type f \( -name 'astcdec-*' -o -name 'astcenc*' \) -perm -111 -print -quit 2>/dev/null || true)"
+          fi
+          if [ -z "$ASTC_BIN" ] || [ ! -x "$ASTC_BIN" ]; then
+            echo "ASTC decoder executable not produced"; find astc-encoder/build-android -type f -perm -111 -print; exit 1
           fi
           mkdir -p app/src/main/assets/astcenc/arm64-v8a
           cp "$ASTC_BIN" app/src/main/assets/astcenc/arm64-v8a/astcenc
