@@ -1,0 +1,106 @@
+name: Build NeoXLab Mobile Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main", "master"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Check source asset
+        run: |
+          set -eu
+          echo "Checking source asset..."
+          if [ ! -f "app/src/main/assets/pathdict.txt.gz" ]; then
+            echo "::error::Missing app/src/main/assets/pathdict.txt.gz in checked-out source."
+            echo "Assets directory contents:"
+            find app/src/main -maxdepth 3 -type f | sort | grep -E 'assets|pathdict' || true
+            exit 1
+          fi
+          ls -lh app/src/main/assets/pathdict.txt.gz
+          file app/src/main/assets/pathdict.txt.gz || true
+
+      - name: Check Android SDK
+        run: |
+          set -eu
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          test -d "$ANDROID_HOME/platforms/android-35" || sdkmanager --install "platforms;android-35"
+          test -d "$ANDROID_HOME/build-tools/35.0.0" || sdkmanager --install "build-tools;35.0.0"
+          test -d "$ANDROID_HOME/ndk/27.2.12479018" || sdkmanager --install "ndk;27.2.12479018"
+          test -d "$ANDROID_HOME/cmake/3.22.1" || sdkmanager --install "cmake;3.22.1"
+          yes | sdkmanager --licenses >/dev/null || true
+
+      - name: Build ASTC decoder for Android arm64
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT}}"
+          NDK="$SDK/ndk/27.2.12479018"
+          CMAKE="$SDK/cmake/3.22.1/bin/cmake"
+          test -x "$CMAKE" || { echo "CMake not found: $CMAKE"; exit 1; }
+          test -f "$NDK/build/cmake/android.toolchain.cmake" || { echo "Android NDK missing"; exit 1; }
+          git clone --depth 1 --branch 5.1.0 https://github.com/ARM-software/astc-encoder.git astc-encoder
+          cmake -S astc-encoder -B astc-encoder/build-android \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-26 \
+            -DANDROID_STL=c++_static \
+            -DARCH=aarch64 \
+            -DASTCENC_ISA_NEON=ON \
+            -DASTCENC_CLI=ON \
+            -DASTCENC_DECOMPRESSOR=ON \
+            -DASTCENC_SHAREDLIB=OFF \
+            -DASTCENC_UNITTEST=OFF
+          cmake --build astc-encoder/build-android --parallel 2
+          ASTC_BIN="$(find astc-encoder/build-android -type f -name 'astcenc*' -perm -111 -print -quit)"
+          if [ -z "$ASTC_BIN" ]; then
+            echo "ASTC decoder executable not produced"; find astc-encoder/build-android -type f | head -200; exit 1
+          fi
+          mkdir -p app/src/main/assets/astcenc/arm64-v8a
+          cp "$ASTC_BIN" app/src/main/assets/astcenc/arm64-v8a/astcenc
+          chmod 644 app/src/main/assets/astcenc/arm64-v8a/astcenc
+          file app/src/main/assets/astcenc/arm64-v8a/astcenc
+
+      - name: Build debug APK
+        run: gradle --no-daemon :app:assembleDebug
+
+      - name: Verify pathdict is packaged in APK
+        run: |
+          set -eu
+          APK="app/build/outputs/apk/debug/app-debug.apk"
+          test -f "$APK"
+          echo "Checking APK asset..."
+          unzip -l "$APK" | grep -E "assets/pathdict\.txt(\.gz)?$" || {
+            echo "::error::Expected assets/pathdict.txt.gz or assets/pathdict.txt in APK."
+            unzip -l "$APK" | grep -E 'pathdict|assets/' | head -100 || true
+            exit 1
+          }
+          echo "Verified: path dictionary is packaged in the APK."
+          unzip -l "$APK" | grep -F "assets/astcenc/arm64-v8a/astcenc"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: NeoXLab-Mobile-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
