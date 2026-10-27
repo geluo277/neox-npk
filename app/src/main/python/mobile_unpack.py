@@ -226,6 +226,12 @@ def extract_all_resources(npk_path, output_dir, pathdict_path, astcenc_path=None
                             if png_target.exists():
                                 png_target = target.with_name(target.stem + "_converted.png")
                             image_convert.convert_image(payload, suffix, png_target, astcenc_path)
+                            # Remove KTX source only after a valid PNG was written.
+                            # DDS cubemaps produce six suffixed PNG files instead.
+                            if suffix in (".ktx", ".kta") and png_target.exists():
+                                with png_target.open("rb") as check_png:
+                                    if check_png.read(8) == b"\x89PNG\r\n\x1a\n":
+                                        target.unlink(missing_ok=True)
                     except Exception as convert_exc:
                         # Unsupported texture encodings remain available as original files.
                         errors.append({"entry": index, "signature": f"{entry.signature:08x}",

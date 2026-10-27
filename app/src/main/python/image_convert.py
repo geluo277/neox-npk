@@ -148,6 +148,64 @@ def _decode_float_rgba16(data: bytes, width: int, height: int, stride: int | Non
     return Image.frombytes("RGBA", (width, height), bytes(out))
 
 
+def _dds_format_info(payload: bytes):
+    """Return (data_offset, dxgi, fourcc, bits_per_pixel) for a DDS payload."""
+    fourcc = payload[84:88]
+    bit_count = struct.unpack_from("<I", payload, 88)[0]
+    dxgi = None
+    data_offset = 128
+    if fourcc == b"DX10":
+        if len(payload) < 148:
+            raise ValueError("truncated DX10 header")
+        dxgi = struct.unpack_from("<I", payload, 128)[0]
+        data_offset = 148
+    return data_offset, dxgi, fourcc, bit_count
+
+
+def _dds_level_size(width: int, height: int, dxgi, fourcc: bytes, bits: int) -> int:
+    bw, bh = (width + 3) // 4, (height + 3) // 4
+    if dxgi in (DXGI_BC1_UNORM,) or fourcc == b"DXT1":
+        return bw * bh * 8
+    if dxgi in (DXGI_BC2_UNORM, DXGI_BC3_UNORM, DXGI_BC5_UNORM, DXGI_BC7_UNORM) or fourcc in (b"DXT3", b"DXT5"):
+        return bw * bh * 16
+    if dxgi == DXGI_R16G16B16A16_FLOAT or bits == 64:
+        return width * height * 8
+    if dxgi in (DXGI_R8G8B8A8_UNORM, DXGI_R8G8B8A8_UNORM_SRGB,
+                DXGI_B8G8R8A8_UNORM, DXGI_B8G8R8X8_UNORM) or bits == 32:
+        return width * height * 4
+    if bits == 8:
+        return width * height
+    raise ValueError(f"无法计算 DDS mip 数据大小：DXGI={dxgi}, fourCC={fourcc!r}, bits={bits}")
+
+
+def dds_to_images(payload: bytes) -> list[Image.Image]:
+    """Decode the base mip of all six faces of a DDS cubemap, or one normal DDS image."""
+    if len(payload) < 128 or not payload.startswith(DDS_MAGIC):
+        raise ValueError("not a DDS file")
+    caps2 = struct.unpack_from("<I", payload, 112)[0]
+    is_cube = bool(caps2 & DDSCAPS2_CUBEMAP)
+    if not is_cube:
+        return [dds_to_image(payload)]
+    width, height = struct.unpack_from("<II", payload, 16)[0], struct.unpack_from("<I", payload, 12)[0]
+    mip_count = max(1, struct.unpack_from("<I", payload, 28)[0])
+    data_offset, dxgi, fourcc, bits = _dds_format_info(payload)
+    faces = []
+    face_offset = data_offset
+    for _face in range(6):
+        first_level = payload[face_offset:face_offset + _dds_level_size(width, height, dxgi, fourcc, bits)]
+        if len(first_level) != _dds_level_size(width, height, dxgi, fourcc, bits):
+            raise ValueError("cubemap DDS 数据不完整")
+        header = bytearray(payload[:data_offset])
+        struct.pack_into("<I", header, 112, caps2 & ~DDSCAPS2_CUBEMAP)
+        struct.pack_into("<I", header, 28, 1)
+        one_face = bytes(header) + first_level
+        faces.append(dds_to_image(one_face))
+        for level in range(mip_count):
+            mw, mh = max(1, width >> level), max(1, height >> level)
+            face_offset += _dds_level_size(mw, mh, dxgi, fourcc, bits)
+    return faces
+
+
 def dds_to_image(payload: bytes) -> Image.Image:
     if len(payload) < 128 or not payload.startswith(DDS_MAGIC):
         raise ValueError("not a DDS file")
@@ -158,8 +216,6 @@ def dds_to_image(payload: bytes) -> Image.Image:
     caps2 = struct.unpack_from("<I", payload, 112)[0]
     if depth > 1:
         raise ValueError("volume DDS not supported")
-    if caps2 & DDSCAPS2_CUBEMAP:
-        raise ValueError("cubemap DDS not supported")
     if width == 0 or height == 0 or width > 16384 or height > 16384:
         raise ValueError("invalid DDS dimensions")
 
@@ -230,20 +286,25 @@ def _ktx1_internal_format(payload: bytes) -> int | None:
 
 
 def _decode_astc_ktx(payload: bytes, output: Path, astcenc_path: str | None = None) -> None:
-    """Decode ASTC-compressed KTX1 using the astcenc binary packaged in the APK."""
-    internal = _ktx1_internal_format(payload)
-    astc_formats = set(range(0x93B0, 0x93C0)) | set(range(0x93D0, 0x93E0))
-    if internal not in astc_formats:
-        raise ValueError(f"不是受支持的 ASTC KTX1 格式：0x{(internal or 0):04X}")
+    """Decode ASTC KTX1 by extracting its first mip into a raw .astc bitstream."""
+    from ktx_to_png import _ASTC_BLOCKS, read_ktx1_bytes
+    width, height, internal, compressed = read_ktx1_bytes(payload)
+    if internal not in _ASTC_BLOCKS:
+        raise ValueError(f"不是受支持的 ASTC KTX1 格式：0x{internal:04X}")
+    block_w, block_h = _ASTC_BLOCKS[internal]
     exe = astcenc_path or os.environ.get("NOTX_ASTCENC")
     if not exe or not os.path.isfile(exe) or not os.access(exe, os.X_OK):
         raise ValueError(f"ASTC 贴图格式 0x{internal:04X} 已识别，但 APK 未包含可运行的 ASTC 解码器")
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
+    # astcenc expects the 16-byte ASTC file header, not a KTX container.
+    astc_header = (b"\x13\xAB\xA1\x5C" + bytes((block_w, block_h, 1)) +
+                   width.to_bytes(3, "little") + height.to_bytes(3, "little") +
+                   (1).to_bytes(3, "little"))
     with tempfile.TemporaryDirectory(prefix="notx_astc_") as td:
-        source = Path(td) / "input.ktx"
+        source = Path(td) / "input.astc"
         decoded = Path(td) / "decoded.png"
-        source.write_bytes(payload)
+        source.write_bytes(astc_header + compressed)
         errors = []
         for mode in ("-ds", "-dl", "-dh", "-dH"):
             try:
@@ -272,16 +333,27 @@ def convert_image(payload: bytes, src_suffix: str, output: Path, astcenc_path: s
     kind = classify(payload, src_suffix)
     output = Path(output)
     if kind == "ktx1":
-        internal = _ktx1_internal_format(payload)
-        astc_formats = set(range(0x93B0, 0x93C0)) | set(range(0x93D0, 0x93E0))
-        if internal in astc_formats:
-            _decode_astc_ktx(payload, output, astcenc_path)
-        else:
+        # Prefer the KTX-aware decoder. If ASTC support isn't bundled in
+        # texture2ddecoder, extract the compressed mip to a valid raw .astc file
+        # before invoking astcenc (never pass the KTX container directly).
+        try:
             ktx_to_png.convert_bytes(payload, output)
+        except Exception as ktx_exc:
+            internal = _ktx1_internal_format(payload)
+            astc_formats = set(range(0x93B0, 0x93BE)) | set(range(0x93D0, 0x93DE))
+            if internal not in astc_formats:
+                raise ktx_exc
+            _decode_astc_ktx(payload, output, astcenc_path)
         return "converted_png", ".png"
     if kind == "dds":
-        image = dds_to_image(payload)
-        image.save(output, "PNG")
+        images = dds_to_images(payload)
+        if len(images) == 1:
+            images[0].save(output, "PNG")
+        else:
+            # Cubemap faces are emitted separately with stable face suffixes.
+            for suffix, image in zip(("px", "nx", "py", "ny", "pz", "nz"), images):
+                face_path = output.with_name(output.stem + "_" + suffix + ".png")
+                image.save(face_path, "PNG")
         return "converted_png", ".png"
     if kind == "png":
         if output.suffix.lower() == ".png":
