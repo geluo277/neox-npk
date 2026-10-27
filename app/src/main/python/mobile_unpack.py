@@ -194,6 +194,15 @@ def extract_all_resources(npk_path, output_dir, pathdict_path, astcenc_path=None
                     original = original.with_suffix(detected_ext)
                 elif not suffix:
                     original = original.with_suffix(detected_ext)
+
+                # Some game path dictionaries label KTX textures with the nonstandard
+                # .kta suffix. Normalize texture filenames to .ktx during extraction.
+                # This changes only the filename extension; the original payload bytes
+                # are preserved and format detection still uses the file signature.
+                if category == "贴图" and original.suffix.lower() == ".kta":
+                    original = original.with_suffix(".ktx")
+                    suffix = ".ktx"
+
                 rel_out = Path(category) / original
                 target = out / rel_out
                 key = str(rel_out).lower()
