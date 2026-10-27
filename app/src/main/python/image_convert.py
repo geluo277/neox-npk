@@ -51,10 +51,14 @@ DXGI_B8G8R8X8_UNORM = 88
 
 def classify(payload: bytes, suffix: str = "") -> str:
     suffix = suffix.lower()
+    # Some game path dictionaries incorrectly label KTX files as .kta.
+    # Detect by file magic first, then use the extension only as a fallback hint.
     if payload.startswith(KTX1_ID):
         return "ktx1"
     if payload.startswith(KTX2_ID):
         return "ktx2"
+    if suffix in (".ktx", ".kta"):
+        return "ktx1"
     if payload.startswith(DDS_MAGIC):
         return "dds"
     if payload.startswith(PNG_ID):
@@ -243,7 +247,7 @@ def image_extension(payload: bytes, src_suffix: str) -> str:
     """Best-effort extension for an unnamed payload."""
     kind = classify(payload, src_suffix)
     if kind in ("ktx1", "ktx2"):
-        return ".kta"
+        return ".ktx"
     if kind == "dds":
         return ".dds"
     if kind == "png":

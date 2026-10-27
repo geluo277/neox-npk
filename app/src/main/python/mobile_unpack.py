@@ -108,6 +108,7 @@ def extract_images(npk_path, output_dir, pathdict_path, jpg=False):
 def _detect_resource(payload: bytes, suffix: str = ""):
     head = payload[:16]
     s = (suffix or "").lower()
+    if s == ".kta": s = ".ktx"
     if head.startswith(b"\x89PNG\r\n\x1a\n"): return "贴图", ".png"
     if head.startswith(b"\xff\xd8\xff"): return "贴图", ".jpg"
     if head.startswith(b"DDS "): return "贴图", ".dds"

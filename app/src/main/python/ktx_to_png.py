@@ -25,6 +25,19 @@ except ImportError:  # pragma: no cover - 纯 Python 后备路径仍可独立工
 KTX1_IDENTIFIER = b"\xABKTX 11\xBB\r\n\x1A\n"
 GL_COMPRESSED_RGB_S3TC_DXT1_EXT = 0x83F0
 GL_COMPRESSED_RGBA_S3TC_DXT5_EXT = 0x83F3
+# OpenGL ASTC 2D block formats, linear and sRGB.
+_ASTC_BLOCKS = {
+    0x93B0: (4, 4), 0x93B1: (5, 4), 0x93B2: (5, 5),
+    0x93B3: (6, 5), 0x93B4: (6, 6), 0x93B5: (8, 5),
+    0x93B6: (8, 6), 0x93B7: (8, 8), 0x93B8: (10, 5),
+    0x93B9: (10, 6), 0x93BA: (10, 8), 0x93BB: (10, 10),
+    0x93BC: (12, 10), 0x93BD: (12, 12),
+    0x93D0: (4, 4), 0x93D1: (5, 4), 0x93D2: (5, 5),
+    0x93D3: (6, 5), 0x93D4: (6, 6), 0x93D5: (8, 5),
+    0x93D6: (8, 6), 0x93D7: (8, 8), 0x93D8: (10, 5),
+    0x93D9: (10, 6), 0x93DA: (10, 8), 0x93DB: (10, 10),
+    0x93DC: (12, 10), 0x93DD: (12, 12),
+}
 
 
 def _rgb565(value: int) -> tuple[int, int, int]:
@@ -88,7 +101,7 @@ def read_ktx1_bytes(blob: bytes, source: object = "<memory>") -> tuple[int, int,
         raise ValueError("不是本工具支持的二维块压缩 KTX1")
     if gl_type_size != 1:
         raise ValueError("只支持块压缩 KTX1")
-    if internal not in (GL_COMPRESSED_RGB_S3TC_DXT1_EXT, GL_COMPRESSED_RGBA_S3TC_DXT5_EXT):
+    if internal not in (GL_COMPRESSED_RGB_S3TC_DXT1_EXT, GL_COMPRESSED_RGBA_S3TC_DXT5_EXT) and internal not in _ASTC_BLOCKS:
         raise ValueError(f"不支持的 glInternalFormat: 0x{internal:04X}")
     data_offset = 64 + kv_size
     if data_offset + 4 > len(blob):
@@ -99,10 +112,15 @@ def read_ktx1_bytes(blob: bytes, source: object = "<memory>") -> tuple[int, int,
     data_offset += 4
     if data_offset + image_size > len(blob):
         raise ValueError("KTX 图像数据越界")
-    expected_block_size = 8 if internal == GL_COMPRESSED_RGB_S3TC_DXT1_EXT else 16
-    block_count = ((width + 3) // 4) * ((height + 3) // 4)
-    if image_size != block_count * expected_block_size:
-        raise ValueError(f"图像大小 {image_size} 与尺寸/格式不符，预期 {block_count * expected_block_size}")
+    if internal in _ASTC_BLOCKS:
+        bw, bh = _ASTC_BLOCKS[internal]
+        block_count = ((width + bw - 1) // bw) * ((height + bh - 1) // bh)
+        expected_block_size = block_count * 16
+    else:
+        expected_block_size = 8 if internal == GL_COMPRESSED_RGB_S3TC_DXT1_EXT else 16
+        block_count = ((width + 3) // 4) * ((height + 3) // 4)
+    if image_size != expected_block_size:
+        raise ValueError(f"图像大小 {image_size} 与尺寸/格式不符，预期 {expected_block_size}")
     return width, height, internal, blob[data_offset:data_offset + image_size]
 
 
@@ -117,7 +135,13 @@ def convert_bytes(blob: bytes, output: Path, source: object = "<memory>") -> dic
     解包器使用这个入口逐帧转换，因此不会先把整个 NPK 的 KTX 文件写到磁盘。
     """
     width, height, internal, compressed = read_ktx1_bytes(blob, source)
-    if texture2ddecoder is not None:
+    if internal in _ASTC_BLOCKS:
+        if texture2ddecoder is None or not hasattr(texture2ddecoder, "decode_astc"):
+            raise ValueError(f"ASTC 贴图格式 0x{internal:04X} 已识别，但当前 APK 未包含 ASTC 解码器；原文件已保留")
+        block_w, block_h = _ASTC_BLOCKS[internal]
+        pixels = texture2ddecoder.decode_astc(compressed, width, height, block_w, block_h)
+        image = Image.frombytes("RGBA", (width, height), pixels, "raw", "BGRA")
+    elif texture2ddecoder is not None:
         # 原生实现返回 BGRA；Pillow 的 raw 解码器把它转换成 RGBA，
         # 避免在大批量导出时执行数百万次 Python 像素循环。
         if internal == GL_COMPRESSED_RGB_S3TC_DXT1_EXT:
