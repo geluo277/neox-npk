@@ -142,7 +142,7 @@ def _detect_resource(payload: bytes, suffix: str = ""):
     return "其他", (s if s and len(s) <= 12 else ".bin")
 
 
-def extract_all_resources(npk_path, output_dir, pathdict_path):
+def extract_all_resources(npk_path, output_dir, pathdict_path, astcenc_path=None):
     """Export every indexed entry without converting its payload.
 
     Supports the known NXPK Mode-3 index with stored (0) and Zstandard (3)
@@ -216,7 +216,7 @@ def extract_all_resources(npk_path, output_dir, pathdict_path):
                             # Avoid overwriting an existing PNG resource with the same name.
                             if png_target.exists():
                                 png_target = target.with_name(target.stem + "_converted.png")
-                            image_convert.convert_image(payload, suffix, png_target)
+                            image_convert.convert_image(payload, suffix, png_target, astcenc_path)
                     except Exception as convert_exc:
                         # Unsupported texture encodings remain available as original files.
                         errors.append({"entry": index, "signature": f"{entry.signature:08x}",

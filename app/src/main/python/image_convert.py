@@ -10,7 +10,10 @@ Only the first mip / base image is exported.
 from __future__ import annotations
 
 import io
+import os
 import struct
+import subprocess
+import tempfile
 from pathlib import Path
 
 from PIL import Image
@@ -214,7 +217,53 @@ def dds_to_image(payload: bytes) -> Image.Image:
     raise ValueError(f"unsupported legacy DDS fourCC={fourcc!r} bits={bit_count}")
 
 
-def convert_image(payload: bytes, src_suffix: str, output: Path) -> tuple[str, str]:
+def _ktx1_internal_format(payload: bytes) -> int | None:
+    """Return KTX1 glInternalFormat from the file header, if valid."""
+    if len(payload) < 64 or not payload.startswith(KTX1_ID):
+        return None
+    try:
+        if struct.unpack_from("<I", payload, 12)[0] != 0x04030201:
+            return None
+        return struct.unpack_from("<I", payload, 28)[0]
+    except struct.error:
+        return None
+
+
+def _decode_astc_ktx(payload: bytes, output: Path, astcenc_path: str | None = None) -> None:
+    """Decode ASTC-compressed KTX1 using the astcenc binary packaged in the APK."""
+    internal = _ktx1_internal_format(payload)
+    astc_formats = set(range(0x93B0, 0x93C0)) | set(range(0x93D0, 0x93E0))
+    if internal not in astc_formats:
+        raise ValueError(f"不是受支持的 ASTC KTX1 格式：0x{(internal or 0):04X}")
+    exe = astcenc_path or os.environ.get("NOTX_ASTCENC")
+    if not exe or not os.path.isfile(exe) or not os.access(exe, os.X_OK):
+        raise ValueError(f"ASTC 贴图格式 0x{internal:04X} 已识别，但 APK 未包含可运行的 ASTC 解码器")
+    output = Path(output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="notx_astc_") as td:
+        source = Path(td) / "input.ktx"
+        decoded = Path(td) / "decoded.png"
+        source.write_bytes(payload)
+        errors = []
+        for mode in ("-ds", "-dl", "-dh", "-dH"):
+            try:
+                proc = subprocess.run([exe, mode, str(source), str(decoded)],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=180)
+            except Exception as exc:
+                errors.append(f"{mode}: {exc}")
+                continue
+            if proc.returncode == 0 and decoded.exists() and decoded.stat().st_size > 8:
+                output.write_bytes(decoded.read_bytes())
+                return
+            errors.append(f"{mode}: {(proc.stderr or proc.stdout or str(proc.returncode))[-240:]}")
+            try:
+                decoded.unlink()
+            except FileNotFoundError:
+                pass
+    raise ValueError("ASTC 解码失败；" + " | ".join(errors))
+
+
+def convert_image(payload: bytes, src_suffix: str, output: Path, astcenc_path: str | None = None) -> tuple[str, str]:
     """Convert a payload to PNG when possible.
 
     Returns (status, final_suffix).  On unsupported content raises ValueError
@@ -223,7 +272,12 @@ def convert_image(payload: bytes, src_suffix: str, output: Path) -> tuple[str, s
     kind = classify(payload, src_suffix)
     output = Path(output)
     if kind == "ktx1":
-        ktx_to_png.convert_bytes(payload, output)
+        internal = _ktx1_internal_format(payload)
+        astc_formats = set(range(0x93B0, 0x93C0)) | set(range(0x93D0, 0x93E0))
+        if internal in astc_formats:
+            _decode_astc_ktx(payload, output, astcenc_path)
+        else:
+            ktx_to_png.convert_bytes(payload, output)
         return "converted_png", ".png"
     if kind == "dds":
         image = dds_to_image(payload)
