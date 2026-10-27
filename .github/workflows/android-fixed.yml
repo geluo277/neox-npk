@@ -1,0 +1,75 @@
+name: Build NeoXLab Mobile Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main", "master"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Check source asset
+        run: |
+          set -eu
+          echo "Checking source asset..."
+          if [ ! -f "app/src/main/assets/pathdict.txt.gz" ]; then
+            echo "::error::Missing app/src/main/assets/pathdict.txt.gz in checked-out source."
+            echo "Assets directory contents:"
+            find app/src/main -maxdepth 3 -type f | sort | grep -E 'assets|pathdict' || true
+            exit 1
+          fi
+          ls -lh app/src/main/assets/pathdict.txt.gz
+          file app/src/main/assets/pathdict.txt.gz || true
+
+      - name: Check Android SDK
+        run: |
+          set -eu
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          test -d "$ANDROID_HOME/platforms/android-35" || sdkmanager --install "platforms;android-35"
+          test -d "$ANDROID_HOME/build-tools/35.0.0" || sdkmanager --install "build-tools;35.0.0"
+          yes | sdkmanager --licenses >/dev/null || true
+
+      - name: Build debug APK
+        run: gradle --no-daemon :app:assembleDebug
+
+      - name: Verify pathdict is packaged in APK
+        run: |
+          set -eu
+          APK="app/build/outputs/apk/debug/app-debug.apk"
+          echo "Checking APK asset..."
+          test -f "$APK"
+          echo "APK: $APK"
+          unzip -l "$APK" | grep -E "assets/pathdict\.txt$" || {
+            echo "::error::Expected assets/pathdict.txt in APK (Android packaging expands the .gz asset and removes the .gz suffix), but it was not found."
+            echo "APK entries containing 'pathdict' or 'assets/':"
+            unzip -l "$APK" | grep -E 'pathdict|assets/' | head -100 || true
+            echo "Gradle sourceSets configuration:"
+            grep -n -A8 -B3 "sourceSets" app/build.gradle || true
+            exit 1
+          }
+          echo "Verified: assets/pathdict.txt is inside the APK. The app must read this asset name and gzip it at runtime if the Python code needs pathdict.txt.gz."
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: NeoXLab-Mobile-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
