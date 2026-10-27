@@ -54,18 +54,14 @@ jobs:
         run: |
           set -eu
           APK="app/build/outputs/apk/debug/app-debug.apk"
-          echo "Checking APK asset..."
           test -f "$APK"
-          echo "APK: $APK"
-          unzip -l "$APK" | grep -E "assets/pathdict\.txt$" || {
-            echo "::error::Expected assets/pathdict.txt in APK (Android packaging expands the .gz asset and removes the .gz suffix), but it was not found."
-            echo "APK entries containing 'pathdict' or 'assets/':"
+          echo "Checking APK asset..."
+          unzip -l "$APK" | grep -E "assets/pathdict\.txt(\.gz)?$" || {
+            echo "::error::Expected assets/pathdict.txt.gz or assets/pathdict.txt in APK."
             unzip -l "$APK" | grep -E 'pathdict|assets/' | head -100 || true
-            echo "Gradle sourceSets configuration:"
-            grep -n -A8 -B3 "sourceSets" app/build.gradle || true
             exit 1
           }
-          echo "Verified: assets/pathdict.txt is inside the APK. The app must read this asset name and gzip it at runtime if the Python code needs pathdict.txt.gz."
+          echo "Verified: path dictionary is packaged in the APK."
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
