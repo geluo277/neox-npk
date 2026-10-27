@@ -107,10 +107,16 @@ jobs:
           if [ -z "$ASTC_BIN" ] || [ ! -x "$ASTC_BIN" ]; then
             echo "ASTC decoder executable not produced"; find astc-encoder/build-android -type f -perm -111 -print; exit 1
           fi
-          mkdir -p app/src/main/assets/astcenc/arm64-v8a
-          cp "$ASTC_BIN" app/src/main/assets/astcenc/arm64-v8a/astcenc
-          chmod 644 app/src/main/assets/astcenc/arm64-v8a/astcenc
-          file app/src/main/assets/astcenc/arm64-v8a/astcenc
+          # Package the PIE executable under jniLibs so Android extracts it to
+          # nativeLibraryDir. Executing a copied file from getFilesDir() can fail
+          # with EACCES on Android devices because that location may be noexec.
+          mkdir -p app/src/main/jniLibs/arm64-v8a
+          cp "$ASTC_BIN" app/src/main/jniLibs/arm64-v8a/libastcenc.so
+          chmod 755 app/src/main/jniLibs/arm64-v8a/libastcenc.so
+          file app/src/main/jniLibs/arm64-v8a/libastcenc.so
+          # Fail early if the packaged decoder is not a 64-bit ARM ELF executable.
+          readelf -h app/src/main/jniLibs/arm64-v8a/libastcenc.so | grep -E 'Class:.*ELF64'
+          readelf -h app/src/main/jniLibs/arm64-v8a/libastcenc.so | grep -E 'Machine:.*AArch64'
 
       - name: Build debug APK
         run: gradle --no-daemon :app:assembleDebug
@@ -127,7 +133,7 @@ jobs:
             exit 1
           }
           echo "Verified: path dictionary is packaged in the APK."
-          unzip -l "$APK" | grep -F "assets/astcenc/arm64-v8a/astcenc"
+          unzip -l "$APK" | grep -E "lib/arm64-v8a/libastcenc\.so$"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
