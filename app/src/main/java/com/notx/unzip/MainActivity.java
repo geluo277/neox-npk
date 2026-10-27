@@ -181,14 +181,32 @@ public class MainActivity extends Activity {
     private void copyToUri(File source, Uri target, String success) { worker.execute(() -> { try (InputStream in = new FileInputStream(source); OutputStream out = getContentResolver().openOutputStream(target)) { byte[] b = new byte[65536]; int n; while ((n = in.read(b)) > 0) out.write(b, 0, n); runOnUiThread(() -> status.setText(success)); } catch (Exception e) { runOnUiThread(() -> status.setText("保存失败：" + e.getMessage())); } }); }
     private String displayName(Uri uri) { String name = "selected.npk"; try (Cursor c = getContentResolver().query(uri, null, null, null, null)) { if (c != null && c.moveToFirst()) { int idx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME); if (idx >= 0) name = c.getString(idx); } } catch (Exception ignored) {} return name; }
 
+    private File ensureAstcDecoder() throws Exception {
+        File decoder = new File(getFilesDir(), "astcenc");
+        if (decoder.exists() && decoder.length() > 0 && decoder.canExecute()) return decoder;
+        if (decoder.exists()) decoder.delete();
+        try (InputStream in = getAssets().open("astcenc/arm64-v8a/astcenc");
+             OutputStream out = new FileOutputStream(decoder)) {
+            byte[] b = new byte[32768]; int n;
+            while ((n = in.read(b)) > 0) out.write(b, 0, n);
+        } catch (Exception e) {
+            if (decoder.exists()) decoder.delete();
+            throw new java.io.IOException("APK 内缺少 ASTC 解码器。请重新运行含 ASTC 构建步骤的 GitHub Actions。", e);
+        }
+        if (!decoder.setExecutable(true, true) || !decoder.canExecute()) {
+            throw new java.io.IOException("无法设置 ASTC 解码器执行权限。");
+        }
+        return decoder;
+    }
+
     private void extract() {
         if (selectedUri == null) { status.setText("请先选择 NPK 文件。"); return; }
         chooseButton.setEnabled(false); extractButton.setEnabled(false); saveButton.setEnabled(false); progress.setVisibility(View.VISIBLE); status.setText("正在复制文件并解析索引，请保持应用打开……");
         worker.execute(() -> { try {
             File input = new File(getCacheDir(), "selected.npk");
             try (InputStream in = getContentResolver().openInputStream(selectedUri); OutputStream out = new FileOutputStream(input)) { byte[] b = new byte[65536]; int n; while ((n = in.read(b)) > 0) out.write(b, 0, n); }
-            ensurePathDict(); unpackDir = new File(getCacheDir(), "all_resources_out"); deleteTree(unpackDir); unpackDir.mkdirs();
-            PyObject result = Python.getInstance().getModule("mobile_unpack").callAttr("extract_all_resources", input.getAbsolutePath(), unpackDir.getAbsolutePath(), pathDict.getAbsolutePath());
+            ensurePathDict(); File astcDecoder = ensureAstcDecoder(); unpackDir = new File(getCacheDir(), "all_resources_out"); deleteTree(unpackDir); unpackDir.mkdirs();
+            PyObject result = Python.getInstance().getModule("mobile_unpack").callAttr("extract_all_resources", input.getAbsolutePath(), unpackDir.getAbsolutePath(), pathDict.getAbsolutePath(), astcDecoder.getAbsolutePath());
             zipFile = new File(getCacheDir(), "NeoXLab-all-resources.zip"); if (zipFile.exists()) zipFile.delete(); zipDirectory(unpackDir, zipFile);
             runOnUiThread(() -> { scanFiles(); status.setText("解包完成：\n" + result.toString() + "\n左侧选择资源可预览；支持导出单个文件或全部 ZIP。"); saveButton.setEnabled(true); });
         } catch (Exception e) { runOnUiThread(() -> status.setText("解包失败：\n" + e.getMessage() + "\n此版本可能不支持该 NPK 的索引或加密方式。")); }
