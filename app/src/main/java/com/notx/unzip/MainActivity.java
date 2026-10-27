@@ -38,6 +38,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
+import java.util.zip.GZIPOutputStream;
 
 public class MainActivity extends Activity {
     private static final int PICK_NPK = 101, CREATE_ZIP = 102, CREATE_FILE = 103;
@@ -59,12 +60,36 @@ public class MainActivity extends Activity {
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
-        getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY | View.SYSTEM_UI_FLAG_LAYOUT_STABLE | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN);
+        hideSystemBars();
         setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
         if (!Python.isStarted()) Python.start(new AndroidPlatform(this));
         pathDict = new File(getFilesDir(), "pathdict.txt.gz");
         try { ensurePathDict(); } catch (Exception ignored) { }
         buildInterface();
+    }
+
+
+    private void hideSystemBars() {
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            getWindow().setDecorFitsSystemWindows(false);
+            android.view.WindowInsetsController controller = getWindow().getInsetsController();
+            if (controller != null) {
+                controller.hide(android.view.WindowInsets.Type.statusBars() | android.view.WindowInsets.Type.navigationBars());
+                controller.setSystemBarsBehavior(android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+            }
+        } else {
+            getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN
+                    | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                    | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                    | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                    | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                    | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN);
+        }
+    }
+
+    @Override public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus) hideSystemBars();
     }
 
     private void buildInterface() {
@@ -115,9 +140,24 @@ public class MainActivity extends Activity {
         if (pathDict == null) pathDict = new File(getFilesDir(), "pathdict.txt.gz");
         if (pathDict.exists() && pathDict.length() > 0) return;
         if (pathDict.exists() && !pathDict.delete()) throw new java.io.IOException("无法删除损坏的路径索引文件");
-        try (InputStream in = getAssets().open("pathdict.txt.gz"); OutputStream out = new FileOutputStream(pathDict)) {
-            byte[] b = new byte[32768]; int n; while ((n = in.read(b)) > 0) out.write(b, 0, n);
-        } catch (Exception e) { if (pathDict.exists()) pathDict.delete(); throw new java.io.IOException("APK 内缺少路径索引 assets/pathdict.txt.gz", e); }
+        Exception firstError = null;
+        // Android normally preserves asset filenames exactly. Try both variants because
+        // some previous CI workflows renamed the compressed path dictionary to pathdict.txt.
+        String[] assetNames = {"pathdict.txt.gz", "pathdict.txt"};
+        boolean copied = false;
+        for (String assetName : assetNames) {
+            try (InputStream in = getAssets().open(assetName); OutputStream fileOut = new FileOutputStream(pathDict);
+                 OutputStream out = assetName.endsWith(".gz") ? fileOut : new GZIPOutputStream(fileOut)) {
+                byte[] b = new byte[32768]; int n; while ((n = in.read(b)) > 0) out.write(b, 0, n);
+                out.flush();
+                copied = true;
+                break;
+            } catch (Exception e) {
+                if (firstError == null) firstError = e;
+                if (pathDict.exists()) pathDict.delete();
+            }
+        }
+        if (!copied) throw new java.io.IOException("APK 内找不到路径索引。请确认 app/src/main/assets/pathdict.txt.gz 已提交到 GitHub 并打包进 APK。", firstError);
         if (!pathDict.exists() || pathDict.length() == 0) throw new java.io.IOException("路径索引文件为空");
     }
     private void chooseNpk() { Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT); i.addCategory(Intent.CATEGORY_OPENABLE); i.setType("*/*"); startActivityForResult(i, PICK_NPK); }
