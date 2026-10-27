@@ -39,15 +39,40 @@ jobs:
           ls -lh app/src/main/assets/pathdict.txt.gz
           file app/src/main/assets/pathdict.txt.gz || true
 
-      - name: Check Android SDK
+      - name: Locate Android SDK manager
+        id: sdk
+        shell: bash
         run: |
-          set -eu
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          test -d "$ANDROID_HOME/platforms/android-35" || sdkmanager --install "platforms;android-35"
-          test -d "$ANDROID_HOME/build-tools/35.0.0" || sdkmanager --install "build-tools;35.0.0"
-          test -d "$ANDROID_HOME/ndk/27.2.12479018" || sdkmanager --install "ndk;27.2.12479018"
-          test -d "$ANDROID_HOME/cmake/3.22.1" || sdkmanager --install "cmake;3.22.1"
-          yes | sdkmanager --licenses >/dev/null || true
+          set -euo pipefail
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          echo "ANDROID SDK: $SDK"
+          if [[ ! -d "$SDK" ]]; then
+            echo "::error::Android SDK directory not found: $SDK"
+            exit 1
+          fi
+          SDKMANAGER="$(find "$SDK/cmdline-tools" -type f -name sdkmanager -perm -u+x -print -quit 2>/dev/null || true)"
+          if [[ -z "$SDKMANAGER" ]]; then
+            echo "::error::sdkmanager was not found under $SDK/cmdline-tools"
+            find "$SDK" -maxdepth 5 -type f -name sdkmanager -print || true
+            exit 1
+          fi
+          echo "Using sdkmanager: $SDKMANAGER"
+          echo "sdkmanager=$SDKMANAGER" >> "$GITHUB_OUTPUT"
+          echo "sdk=$SDK" >> "$GITHUB_OUTPUT"
+
+      - name: Install Android SDK packages
+        shell: bash
+        env:
+          SDKMANAGER: ${{ steps.sdk.outputs.sdkmanager }}
+          SDK: ${{ steps.sdk.outputs.sdk }}
+        run: |
+          set -euo pipefail
+          "$SDKMANAGER" --sdk_root="$SDK" --licenses < /dev/null || true
+          "$SDKMANAGER" --sdk_root="$SDK" --install \
+            "platforms;android-35" \
+            "build-tools;35.0.0" \
+            "ndk;27.2.12479018" \
+            "cmake;3.22.1"
 
       - name: Build ASTC decoder for Android arm64
         shell: bash
