@@ -182,19 +182,28 @@ public class MainActivity extends Activity {
     private String displayName(Uri uri) { String name = "selected.npk"; try (Cursor c = getContentResolver().query(uri, null, null, null, null)) { if (c != null && c.moveToFirst()) { int idx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME); if (idx >= 0) name = c.getString(idx); } } catch (Exception ignored) {} return name; }
 
     private File ensureAstcDecoder() throws Exception {
-        File decoder = new File(getFilesDir(), "astcenc");
-        if (decoder.exists() && decoder.length() > 0 && decoder.canExecute()) return decoder;
-        if (decoder.exists()) decoder.delete();
-        try (InputStream in = getAssets().open("astcenc/arm64-v8a/astcenc");
-             OutputStream out = new FileOutputStream(decoder)) {
-            byte[] b = new byte[32768]; int n;
-            while ((n = in.read(b)) > 0) out.write(b, 0, n);
-        } catch (Exception e) {
-            if (decoder.exists()) decoder.delete();
-            throw new java.io.IOException("APK 内缺少 ASTC 解码器。请重新运行含 ASTC 构建步骤的 GitHub Actions。", e);
+        // The CLI is packaged in jniLibs and extracted by PackageManager into
+        // nativeLibraryDir. Do not copy it into getFilesDir(), which may be noexec.
+        File decoder = new File(getApplicationInfo().nativeLibraryDir, "libastcenc.so");
+        if (!decoder.isFile() || decoder.length() == 0) {
+            throw new java.io.IOException("APK 内缺少 ASTC 解码器：" + decoder.getAbsolutePath()
+                + "。请确认 GitHub Actions 已成功打包 lib/arm64-v8a/libastcenc.so，并安装最新 APK。");
         }
-        if (!decoder.setExecutable(true, true) || !decoder.canExecute()) {
-            throw new java.io.IOException("无法设置 ASTC 解码器执行权限。");
+        // Probe process creation before unpacking thousands of textures. A
+        // non-zero exit code is fine here (the CLI prints usage without input);
+        // failure to start is the actionable EACCES/architecture error.
+        Process probe = null;
+        try {
+            probe = new ProcessBuilder(decoder.getAbsolutePath())
+                .redirectErrorStream(true).start();
+            if (!probe.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                probe.destroyForcibly();
+            }
+        } catch (Exception e) {
+            if (probe != null) probe.destroyForcibly();
+            throw new java.io.IOException("ASTC 解码器文件已打包，但 Android 无法启动它："
+                + decoder.getAbsolutePath() + "；原因：" + e.getMessage()
+                + "。请确认安装的是最新 arm64-v8a APK；若仍失败，需要改为 JNI 解码，不能只靠 chmod。", e);
         }
         return decoder;
     }
