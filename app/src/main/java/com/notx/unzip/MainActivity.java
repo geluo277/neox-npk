@@ -100,8 +100,16 @@ public class MainActivity extends Activity {
         extractButton = button("开始解包"); toolbar.addView(extractButton, wrap());
         saveButton = button("导出全部 ZIP"); saveButton.setEnabled(false); toolbar.addView(saveButton, wrap());
         root.addView(toolbar, new LinearLayout.LayoutParams(-1, -2));
+        // Long logs (many unsupported texture formats) stay in a fixed-height scrollable area
+        // so the category filters and resource list remain visible and tappable.
+        ScrollView statusScroll = new ScrollView(this);
+        statusScroll.setFillViewport(false);
+        statusScroll.setVerticalScrollBarEnabled(true);
         status = text("请选择 NPK 文件。解包后可在左侧分类浏览，右侧预览资源。", 12, MUTED, false);
-        LinearLayout.LayoutParams st = new LinearLayout.LayoutParams(-1, -2); st.topMargin = dp(5); st.bottomMargin = dp(6); root.addView(status, st);
+        status.setTextIsSelectable(true);
+        status.setPadding(dp(2), dp(2), dp(6), dp(2));
+        statusScroll.addView(status, new ScrollView.LayoutParams(-1, -2));
+        LinearLayout.LayoutParams st = new LinearLayout.LayoutParams(-1, dp(64)); st.topMargin = dp(5); st.bottomMargin = dp(4); root.addView(statusScroll, st);
         progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal); progress.setIndeterminate(true); progress.setVisibility(View.GONE); root.addView(progress, new LinearLayout.LayoutParams(-1, dp(3)));
 
         LinearLayout body = new LinearLayout(this); body.setOrientation(LinearLayout.HORIZONTAL); LinearLayout.LayoutParams bodyLp = new LinearLayout.LayoutParams(-1, 0, 1); bodyLp.topMargin = dp(7); root.addView(body, bodyLp);
@@ -129,7 +137,7 @@ public class MainActivity extends Activity {
     private void addCategoryButtons() {
         String[] categories = {"全部", "贴图", "UI", "3D模型", "代码与配置", "音频", "其他"};
         categoryBar.removeAllViews();
-        for (String c : categories) { Button b = button(c); b.setTextSize(11); b.setPadding(dp(8), 0, dp(8), 0); LinearLayout.LayoutParams p = wrap(); p.rightMargin = dp(4); categoryBar.addView(b, p); b.setOnClickListener(v -> { activeCategory = c; refreshList(); }); }
+        for (String c : categories) { Button b = button(c); b.setTextSize(12); b.setMinHeight(dp(44)); b.setMinimumHeight(dp(44)); b.setPadding(dp(12), 0, dp(12), 0); LinearLayout.LayoutParams p = wrap(); p.rightMargin = dp(5); categoryBar.addView(b, p); b.setOnClickListener(v -> { activeCategory = c; refreshList(); }); }
     }
     private TextView text(String s, int size, int color, boolean bold) { TextView t = new TextView(this); t.setText(s); t.setTextSize(size); t.setTextColor(color); if (bold) t.setTypeface(Typeface.DEFAULT, Typeface.BOLD); return t; }
     private Button button(String s) { Button b = new Button(this); b.setText(s); b.setTextSize(12); b.setTextColor(TEXT); b.setAllCaps(false); b.setBackgroundTintList(android.content.res.ColorStateList.valueOf(PANEL2)); return b; }
@@ -166,7 +174,7 @@ public class MainActivity extends Activity {
 
     @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data); if (resultCode != RESULT_OK || data == null || data.getData() == null) return; Uri uri = data.getData();
-        if (requestCode == PICK_NPK) { selectedUri = uri; status.setText("已选择：" + displayName(uri) + "。点击“开始解包”。"); saveButton.setEnabled(false); }
+        if (requestCode == PICK_NPK) { selectedUri = uri; status.setText("已选择：" + displayName(uri) + "。\n点击“开始解包”开始处理。详细日志可在此区域上下滑动查看。"); saveButton.setEnabled(false); }
         else if (requestCode == CREATE_ZIP) copyToUri(zipFile, uri, "ZIP 已保存到你选择的位置。");
         else if (requestCode == CREATE_FILE && selectedExportFile != null) copyToUri(selectedExportFile, uri, "已导出：" + selectedExportFile.getName());
     }
