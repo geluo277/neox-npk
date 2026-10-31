@@ -57,15 +57,31 @@ public class MainActivity extends Activity {
     private final ArrayList<String> shownLabels = new ArrayList<>();
     private String activeCategory = "全部";
     private File currentFile;
+    private boolean pythonReady = false;
+    private String pythonStartupError = null;
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
         hideSystemBars();
         setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
-        if (!Python.isStarted()) Python.start(new AndroidPlatform(this));
+        try {
+            if (!Python.isStarted()) Python.start(new AndroidPlatform(this));
+            pythonReady = true;
+        } catch (Throwable error) {
+            // Keep the app open so the startup failure can be shown instead of an instant crash.
+            pythonStartupError = error.getClass().getSimpleName() + ": " + String.valueOf(error.getMessage());
+            android.util.Log.e("NeoxUnZip", "Python runtime startup failed", error);
+        }
         pathDict = new File(getFilesDir(), "pathdict.txt.gz");
-        try { ensurePathDict(); } catch (Exception ignored) { }
+        try { ensurePathDict(); } catch (Exception error) {
+            android.util.Log.e("NeoxUnZip", "Path dictionary initialization failed", error);
+        }
         buildInterface();
+        if (!pythonReady) {
+            status.setText("Python 运行环境启动失败，暂时无法解包。错误：" + pythonStartupError
+                    + "\n请导出崩溃日志或截图反馈。建议确认 APK 已使用新版 Chaquopy 构建。");
+            extractButton.setEnabled(false);
+        }
     }
 
 
@@ -209,6 +225,7 @@ public class MainActivity extends Activity {
     }
 
     private void extract() {
+        if (!pythonReady) { status.setText("Python 运行环境未启动，无法解包。错误：" + pythonStartupError); return; }
         if (selectedUri == null) { status.setText("请先选择 NPK 文件。"); return; }
         chooseButton.setEnabled(false); extractButton.setEnabled(false); saveButton.setEnabled(false); progress.setVisibility(View.VISIBLE); status.setText("正在复制文件并解析索引，请保持应用打开……");
         worker.execute(() -> { try {
