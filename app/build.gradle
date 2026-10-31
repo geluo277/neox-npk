@@ -15,7 +15,8 @@ android {
     }
     packaging {
         jniLibs {
-            useLegacyPackaging = true
+            // Keep native libraries uncompressed for modern Android page-size alignment.
+            useLegacyPackaging = false
         }
     }
 
